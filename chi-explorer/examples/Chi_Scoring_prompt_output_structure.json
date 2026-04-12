@@ -1,0 +1,49 @@
+{
+  "call_context": {
+    "difficulty": "1-5",
+    "reasoning": "Assessment of call difficulty: 1=simple inquiry, 3=moderate complexity, 5=extremely difficult (hostile customer, complex technical issue, sensitive situation)",
+    "complexity_factors": ["List specific factors that made this call challenging, e.g., 'angry customer', 'complex account issue', 'multiple problems', or 'straightforward inquiry' if simple"],
+    "customer_sentiment": "calm/frustrated/angry/distressed/neutral",
+    "customer_context_notes": "Note any hardship status that affected the call complexity or required sensitivity"
+  },
+  "customer_engagement": {
+    "score": "1-5",
+    "reasoning": "Specific explanation for this criterion score, including observed behaviors and evidence. Note whether top performer phrases were used.",
+    "quotes": ["Exact transcript quotes supporting this criterion evaluation"]
+  },
+  "needs_identification": {
+    "score": "1-5",
+    "reasoning": "Specific explanation for this criterion score, including observed behaviors and evidence. Note depth of investigation and follow-up questions.",
+    "quotes": ["Exact transcript quotes supporting this criterion evaluation"]
+  },
+  "customer_identification": {
+    "score": "1-5 or N/A",
+    "reasoning": "Specific explanation for this criterion score or why it's N/A. Remember: we cannot determine pre-auth or OTP success from transcripts - focus on agent's communication quality.",
+    "quotes": ["Exact transcript quotes supporting this criterion evaluation, or empty array if N/A"]
+  },
+  "digital_deflection": {
+    "score": "1-5 or N/A",
+    "reasoning": "Specific explanation including identified call type and whether digital deflection was appropriate. If generic mentions only, explain why score is low. Note if step-by-step guidance was provided.",
+    "quotes": ["Exact transcript quotes supporting this criterion evaluation, or empty array if N/A"]
+  },
+  "solution_presentation": {
+    "score": "1-5 or N/A",
+    "reasoning": "Specific explanation for this criterion score or why it's N/A. Note whether specific amounts, dates, and processes were explained.",
+    "quotes": ["Exact transcript quotes supporting this criterion evaluation, or empty array if N/A"]
+  },
+  "value_added_services": {
+    "score": "1-5 or N/A",
+    "reasoning": "Specific explanation including whether appropriate opportunities were identified. Note: If hardship customer, praise restraint. Check for broadband keywords (NBN, internet, broadband).",
+    "quotes": ["Exact transcript quotes supporting this criterion evaluation, or empty array if N/A"]
+  },
+  "call_summary_closure": {
+    "score": "1-5 or N/A",
+    "reasoning": "Specific explanation for this criterion score or why it's N/A. Note whether specific amounts, dates, and next steps were provided.",
+    "quotes": ["Exact transcript quotes supporting this criterion evaluation, or empty array if N/A"]
+  },
+  "overall_performance": {
+    "average_score": "Calculate average of all applicable scores (exclude N/A)",
+    "key_strengths": ["2-3 specific positive behaviors observed"],
+    "priority_improvement_areas": ["2-3 specific areas needing most improvement based on lowest scores"]
+  }
+}

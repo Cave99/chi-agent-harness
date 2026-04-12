@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "chi-explorer",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": ["-c", "/usr/bin/python3 '/Users/cave/Documents/Projects/CHI Explorer/chi-explorer/app.py'"],
+      "port": 5001
+    }
+  ]
+}

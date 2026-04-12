@@ -1,0 +1,45 @@
+{
+  "overall_effectiveness_summary": {
+    "customer_experience_assessment": "Brief assessment of overall call quality and customer satisfaction likely outcome. Consider customer context (hardship status, CHI score, call difficulty).",
+    "customer_context_notes": "Note any hardship status, low CHI, recent complaints, or high call volume that affected call complexity or required sensitivity",
+    "primary_strengths": ["2-3 specific things the agent did well, noting any top performer phrases used"],
+    "critical_gaps": ["2-3 specific areas that prevented better customer experience"]
+  },
+  "priority_coaching_recommendations": [
+    {
+      "priority": 1,
+      "coaching_area": "Specific skill/technique to improve (e.g., 'Digital deflection - providing step-by-step guidance')",
+      "current_approach": "EXACT quote(s) from evaluation or transcript - NO PARAPHRASING, NO INVENTION.",
+      "ineffectiveness_reason": "Clear explanation of why this approach limited effectiveness (customer impact and/or business impact).",
+      "recommended_approach": "Specific alternative phrasing or technique from top performers",
+      "example_implementation": "Concrete example: 'Instead of saying X, try: [exact top performer phrase] because...'",
+      "expected_impact": "How this change would improve customer experience and/or business outcomes"
+    },
+    {
+      "priority": 2,
+      "coaching_area": "Second most important area",
+      "current_approach": "EXACT quote(s) from evaluation or transcript - NO PARAPHRASING, NO INVENTION",
+      "ineffectiveness_reason": "Clear explanation of why this approach limited effectiveness",
+      "recommended_approach": "Specific alternative phrasing or technique from top performers",
+      "example_implementation": "Concrete example with specific phrases from phrase library",
+      "expected_impact": "How this change would improve customer experience and/or business outcomes"
+    },
+    {
+      "priority": 3,
+      "coaching_area": "Third most important area (only if clearly impactful)",
+      "current_approach": "EXACT quote(s) from evaluation or transcript - NO PARAPHRASING, NO INVENTION",
+      "ineffectiveness_reason": "Clear explanation of why this approach limited effectiveness",
+      "recommended_approach": "Specific alternative phrasing or technique from top performers",
+      "example_implementation": "Concrete example with specific phrases from phrase library",
+      "expected_impact": "How this change would improve customer experience and/or business outcomes"
+    }
+  ],
+  "positive_behaviors_to_reinforce": [
+    {
+      "strength": "Specific positive behavior observed",
+      "evidence": "Quote showing this strength",
+      "why_effective": "Explanation of why this approach worked well for customer experience.",
+      "encourage_continued_use": "Brief note on maintaining/expanding this strength"
+    }
+  ]
+}
