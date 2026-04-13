@@ -38,11 +38,7 @@ export function useSSE() {
     eventSource.addEventListener('background_token', (e) => {
       const data = JSON.parse((e as MessageEvent).data);
       const chunk: string = data.text || '';
-      setLastBgLine((prev) => {
-        const combined = prev + chunk;
-        const lines = combined.split('\n');
-        return lines[lines.length - 1].slice(-150);
-      });
+      console.log(`[BG_TOKEN ${elapsed()}]`, JSON.stringify(chunk));
     });
 
     eventSource.addEventListener('gate', (e) => {

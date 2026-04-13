@@ -39,11 +39,23 @@ async def stream_business_agent(sid: str, question: str) -> dict:
 
     threading.Thread(target=_produce, daemon=True).start()
 
+    char_count = 0
+    last_status_at = 0
+    STATUS_INTERVAL = 100  # push a status update every N chars
+
     while True:
         kind, value = await async_q.get()
         if kind == "token":
             await sse_manager.push_event(sid, "background_token", {"text": value})
+            char_count += len(value)
+            if char_count - last_status_at >= STATUS_INTERVAL:
+                last_status_at = char_count
+                await sse_manager.push_event(
+                    sid, "status",
+                    {"message": f"Building analysis plan… ({char_count} chars)"}
+                )
         elif kind == "done":
+            await sse_manager.push_event(sid, "status", {"message": "Validating and parsing plan…"})
             return value  # type: ignore[return-value]
         elif kind == "error":
             raise value
