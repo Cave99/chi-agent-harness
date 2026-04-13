@@ -60,10 +60,11 @@ def new_session_id() -> str:
 
 def _empty_state() -> dict:
     return {
-        "messages":        [],
-        "current_job":     _empty_job(),
+        "messages":          [],
+        "current_job":       _empty_job(),
         "last_summary_dict": {},
-        "last_charts":     [],
+        "enriched_records":  [],
+        "last_charts":       [],
     }
 
 

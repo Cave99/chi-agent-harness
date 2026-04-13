@@ -333,6 +333,56 @@ def analyse_with_refinement(
     )
 
 
+def route_question(question: str, context: dict) -> str:
+    """
+    Decide if a user question is a new analysis request or a follow-up on 
+    existing data in the session.
+
+    Args:
+        question: The user's new question.
+        context:  A dict containing:
+                    - previous_question: (str)
+                    - field_manifest: (dict)
+                    - summary: (dict)
+                    - has_data: (bool)
+
+    Returns:
+        One of: "new_analysis", "follow_up".
+    """
+    if not context.get("has_data"):
+        return "new_analysis"
+
+    prompt = f"""You are a query router. Your goal is to decide if a business question 
+is a completely NEW analysis request (requiring different call transcripts) or 
+a FOLLOW-UP question that can be answered using the data already retrieved in 
+the current session.
+
+## Existing Session Context
+Original Question: {context.get("previous_question", "None")}
+Extracted Fields: {", ".join(f["name"] for f in context.get("field_manifest", {}).get("fields", []))}
+Summary Findings: {json.dumps(context.get("summary", {}))[:1000]}
+
+## New User Question
+{question}
+
+## Routing Decision Logic:
+- If the user wants to see DIFFERENT calls or filter by a DIFFERENT date range/team than the original question, route as "new_analysis".
+- If the user wants to drill into specific agents, teams, or values ALREADY extracted, or asks for different charts/stats of the SAME data, route as "follow_up".
+
+Respond with exactly one word: "new_analysis" or "follow_up"."""
+
+    raw = provider.chat(
+        messages=[{"role": "user", "content": prompt}],
+        system="You are a query router. Output exactly one word.",
+        model=config.BUSINESS_AGENT_MODEL,
+    )
+
+    decision = raw.strip().lower()
+    if "follow_up" in decision:
+        return "follow_up"
+    return "new_analysis"
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _parse_json_response(raw: str) -> dict:

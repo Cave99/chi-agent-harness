@@ -23,9 +23,10 @@ logger = logging.getLogger(__name__)
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def parse(jsonl_text: str, field_manifest: dict, metadata_by_id: dict) -> dict:
+def parse(jsonl_text: str, field_manifest: dict, metadata_by_id: dict) -> tuple[dict, list[dict]]:
     """
-    Parse JSONL batch output into a structured summary dict.
+    Parse JSONL batch output into a structured summary dict and the full
+    list of enriched records.
 
     Args:
         jsonl_text:      Raw JSONL string (one JSON object per line).
@@ -33,7 +34,7 @@ def parse(jsonl_text: str, field_manifest: dict, metadata_by_id: dict) -> dict:
         metadata_by_id:  {record_id: {call_id, agent_name, team_name, ...}}
 
     Returns:
-        Summary dict conforming to the spec in chi_explorer_handoff.md §2.
+        A tuple of (summary_dict, enriched_records_list).
     """
     fields = {f["name"]: f for f in field_manifest.get("fields", [])}
     records = _parse_lines(jsonl_text)
@@ -45,7 +46,8 @@ def parse(jsonl_text: str, field_manifest: dict, metadata_by_id: dict) -> dict:
         combined = {**rec, **meta}
         enriched.append(combined)
 
-    return _aggregate(enriched, fields)
+    summary = _aggregate(enriched, fields)
+    return summary, enriched
 
 
 # ── Line parsing ──────────────────────────────────────────────────────────────

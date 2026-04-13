@@ -608,6 +608,7 @@ export default function App() {
     try {
       const formData = new FormData();
       formData.append('question', query);
+      if (sessionId) formData.append('session_id', sessionId);
 
       const res = await fetch('http://localhost:5001/chat', {
         method: 'POST',

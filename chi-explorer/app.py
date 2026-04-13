@@ -25,8 +25,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from sse_starlette.sse import EventSourceResponse
 
 import config
-from agents import business_agent, briefing_agent, code_agent, vision_agent
-from pipeline import batch, db, parser, provider
+from agents import business_agent, vision_agent, data_agent
+from pipeline import batch, db, parser, provider, sandbox
 import session.state as state
 
 import sqlglot
@@ -135,22 +135,48 @@ async def _stream_via_thread(sid: str, messages: list, system: str, model: str) 
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.post("/chat")
-async def chat(background_tasks: BackgroundTasks, question: str = Form(...)):
+async def chat(background_tasks: BackgroundTasks, question: str = Form(...), session_id: str | None = Form(None)):
     """
     User submitted a question.
-    Immediately returns {ok, session_id} and kicks off the Business Agent.
+    Immediately returns {ok, session_id} and kicks off either the Business Agent
+    (for a new plan) or the Data Agent (for a follow-up).
     """
-    sid = _get_or_create_session_id()
+    sid = _get_or_create_session_id(session_id)
     if not question:
         raise HTTPException(status_code=400, detail="Question cannot be empty.")
 
-    state.append_message(sid, "user", question)
-    state.clear_job(sid)
-    state.update_job(sid, question=question, status="pending")
+    s = state.get(sid)
+    has_data = len(s.get("enriched_records", [])) > 0
+    
+    # ── 1. Route the question ────────────────────────────────────────────────
+    if has_data:
+        # Business Agent decides: is this a follow-up or a fresh analysis?
+        job = s.get("current_job", {})
+        context = {
+            "previous_question": job.get("question", ""),
+            "field_manifest": job.get("field_manifest", {}),
+            "summary": s.get("last_summary_dict", {}),
+            "has_data": True,
+        }
+        route = await asyncio.to_thread(business_agent.route_question, question, context)
+    else:
+        route = "new_analysis"
 
+    # ── 2. Dispatch the appropriate task ─────────────────────────────────────
     _sse_queues[sid] = asyncio.Queue()
 
-    background_tasks.add_task(_run_business_agent_task, sid, question)
+    if route == "follow_up":
+        state.append_message(sid, "user", question)
+        # Note: we DON'T clear_job(sid) here because we need the current job's field_manifest
+        background_tasks.add_task(_run_followup_task, sid, question)
+    else:
+        state.append_message(sid, "user", question)
+        # Clear previous analysis data
+        state.clear_job(sid)
+        state.update(sid, last_summary_dict={}, last_charts=[], enriched_records=[])
+        state.update_job(sid, question=question, status="pending")
+        background_tasks.add_task(_run_business_agent_task, sid, question)
+
     return JSONResponse({"ok": True, "session_id": sid})
 
 
@@ -324,7 +350,7 @@ async def stream(session_id: str, request: Request):
 @app.post("/reset")
 async def reset():
     sid = _get_or_create_session_id()
-    state.update(sid, messages=[], current_job={}, last_summary_dict={}, last_charts=[])
+    state.update(sid, messages=[], current_job={}, last_summary_dict={}, last_charts=[], enriched_records=[])
     return JSONResponse({"ok": True}, status_code=204)
 
 
@@ -417,40 +443,17 @@ async def _run_pipeline_task(sid: str, question: str, where_clause: str, system_
         # ── 4. Parse results ───────────────────────────────────────────────────
         await _push_event(sid, "status", {"message": "Parsing and structuring AI responses…"})
         t = time.perf_counter()
-        summary = await asyncio.to_thread(parser.parse, batch_result["jsonl"], field_manifest, metadata_by_id)
-        state.update(sid, last_summary_dict=summary)
+        summary, records = await asyncio.to_thread(parser.parse, batch_result["jsonl"], field_manifest, metadata_by_id)
+        state.update(sid, last_summary_dict=summary, enriched_records=records)
         logger.info("[TIMING] Parser: %.2fs", time.perf_counter() - t)
 
-        # ── 5. Briefing agent ──────────────────────────────────────────────────
-        await _push_event(sid, "status", {"message": "Briefing chart generation agent…"})
+        # ── 5. Data Agent → chart specs ────────────────────────────────────────
+        await _push_event(sid, "status", {"message": "Generating visualizations via Data Agent…"})
         t = time.perf_counter()
-        brief_text = await asyncio.to_thread(briefing_agent.brief, question, summary)
-        logger.info("[TIMING] Briefing Agent LLM: %.2fs", time.perf_counter() - t)
-
-        # ── 6. Code agent → chart specs ────────────────────────────────────────
-        await _push_event(sid, "status", {"message": "Generating visualizations…"})
-        t = time.perf_counter()
-        json_charts_str = await asyncio.to_thread(code_agent.generate_script, brief_text, summary)
-        logger.info("[TIMING] Code Agent LLM: %.2fs", time.perf_counter() - t)
-
-        # Safely parse the charts JSON
-        try:
-            raw_json = json_charts_str.strip()
-            if raw_json.startswith("```"):
-                lines = raw_json.split("\n")
-                if lines[0].startswith("```"):
-                    lines = lines[1:]
-                if lines and lines[-1].startswith("```"):
-                    lines = lines[:-1]
-                raw_json = "\n".join(lines).strip()
-            charts = json.loads(raw_json)
-            if not isinstance(charts, list):
-                charts = [charts]
-        except Exception as parse_e:
-            logger.warning("Failed to parse Recharts JSON payload: %s", parse_e)
-            charts = []
-
+        script = await asyncio.to_thread(data_agent.generate_script, question, field_manifest, records[:3])
+        _, charts = await asyncio.to_thread(sandbox.execute_data_script, script, records)
         state.update(sid, last_charts=charts)
+        logger.info("[TIMING] Data Agent + Sandbox: %.2fs", time.perf_counter() - t)
 
         # ── 7. Vision agent → executive summary (streamed) ────────────────────
         await _push_event(sid, "status", {"message": "Writing executive summary…"})
@@ -483,6 +486,42 @@ async def _run_pipeline_task(sid: str, question: str, where_clause: str, system_
         logger.exception("Pipeline task failed")
         state.update_job(sid, status="failed")
         await _push_event(sid, "error", {"message": str(exc)})
+
+async def _run_followup_task(sid: str, question: str) -> None:
+    try:
+        t0 = time.perf_counter()
+        s = state.get(sid)
+        records = s.get("enriched_records", [])
+        field_manifest = s.get("current_job", {}).get("field_manifest", {})
+
+        if not records:
+            raise ValueError("No records found in session to perform follow-up analysis.")
+
+        await _push_event(sid, "status", {"message": "Analysing existing data for follow-up…"})
+
+        # 1. Data Agent generates the Python script
+        script = await asyncio.to_thread(data_agent.generate_script, question, field_manifest, records[:3])
+        logger.info("[TIMING] Data Agent script generation: %.2fs", time.perf_counter() - t0)
+
+        # 2. Sandbox executes the script
+        t_exec = time.perf_counter()
+        answer, charts = await asyncio.to_thread(sandbox.execute_data_script, script, records)
+        logger.info("[TIMING] Sandbox execution: %.2fs", time.perf_counter() - t_exec)
+
+        # Update state
+        state.append_message(sid, "assistant", answer, msg_type="results")
+        state.update(sid, last_charts=charts)
+
+        # Complete event
+        await _push_event(sid, "complete", {
+            "summary": answer,
+            "charts": charts,
+        })
+
+    except Exception as exc:
+        logger.exception("Follow-up task failed")
+        await _push_event(sid, "error", {"message": str(exc)})
+
 
 if __name__ == "__main__":
     import uvicorn

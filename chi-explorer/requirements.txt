@@ -6,3 +6,4 @@ python-multipart==0.0.9
 json-repair==0.30.3
 python-dotenv==1.0.1
 sqlglot==23.11.0
+pandas==2.2.2
