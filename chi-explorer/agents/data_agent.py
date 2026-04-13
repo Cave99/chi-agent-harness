@@ -24,7 +24,15 @@ Your goal is to write a Python script that analyzes a dataset of call transcript
 The script runs in a restricted sandbox where:
 1.  A Pandas DataFrame named `df` is already available in the global namespace.
 2.  `pandas` (as `pd`) and `json` are imported.
-3.  The `df` contains the extraction results joined with call metadata (call_id, agent_name, team_name, call_datetime).
+3.  The `df` contains the extraction results joined with call metadata.
+    AVAILABLE METADATA COLUMNS (always present):
+    - `call_id`: (string) unique identifier for the call
+    - `agent_name`: (string) name of the agent
+    - `team_name`: (string) name of the agent's team
+    - `call_datetime`: (string/datetime) when the call occurred
+    - `call_duration`: (int) duration in seconds
+    - `call_queue`: (string) the queue the call entered
+    - `agent_leader_name`: (string) name of the agent's supervisor
 4.  You MUST populate two variables in the local namespace:
     - `answer`: (string) A concise natural language answer to the user's question based on the analysis.
     - `charts`: (list of dicts) A list of Recharts configuration objects.
@@ -49,12 +57,15 @@ Colors to use: `#ac3500`, `#ffb233`, `#5f5e5e`, `#6366f1`.
 
 ## Instructions for your script:
 1.  Perform the analysis on `df`.
-2.  Handle cases where fields might be 'N/A' or None (drop them or filter them out before calculating stats).
-3.  Format the `answer` string with your findings.
-4.  Construct the `charts` list with appropriate visualizations (1-4 charts).
-5.  Use ONLY standard pandas methods. No `eval()`, `exec()`, or file operations.
-6.  Produce output ONLY as a raw Python script. No markdown, no explanation.
+2.  CRITICAL: Use `team_name` for team-related analysis, NOT `team`. Use `agent_name` for agent-related analysis.
+3.  Handle cases where fields might be 'N/A' or None (drop them or filter them out before calculating stats).
+4.  Format the `answer` string with your findings.
+5.  Construct the `charts` list with appropriate visualizations (1-4 charts).
+6.  Use ONLY standard pandas methods. No `eval()`, `exec()`, multiprocessing, or file operations.
+7.  Stay within the allowed imports: `pandas`, `json`, `math`, `collections`, `statistics`, `datetime`. Do NOT attempt to import anything else.
+8.  Produce output ONLY as a raw Python script. No markdown, no explanation.
 """
+
 
 def generate_script(question: str, field_manifest: dict, sample_records: list[dict]) -> str:
     """

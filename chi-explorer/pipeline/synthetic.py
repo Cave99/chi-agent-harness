@@ -58,12 +58,20 @@ def _gen_numerical(field: dict):
 
 _CATEGORICAL_POOLS = {
     "coaching_area":    ["Digital deflection", "Call closure", "Needs identification", "Customer engagement", "Value added services"],
-    "sentiment":        ["calm", "frustrated", "angry", "distressed", "neutral"],
+    "sentiment":        ["Positive", "Neutral", "Negative", "Frustrated", "Highly Satisfied"],
     "outcome":          ["Resolved", "Escalated", "Transferred", "Callback arranged", "Unresolved"],
     "call_type":        ["Billing enquiry", "Technical fault", "Account change", "Cancellation", "General enquiry"],
     "queue":            ["Retention", "Sales", "Collections", "Technical Support"],
     "region":           ["VIC", "NSW", "QLD", "WA", "SA"],
-    "_default":         ["Category A", "Category B", "Category C", "Category D"],
+    "objection":        ["Price too high", "Competitor offer", "No longer needed", "Technical issues", "Contract terms"],
+    "reason":           ["Billing question", "Price increase", "Moving house", "Switching provider", "Technical support"],
+    "compliance":       ["Fully compliant", "Missing ID check", "Incorrect pricing stated", "No closing script", "Partial compliance"],
+    "competitor":       ["Telstra", "Optus", "Vodafone", "TPG", "Aussie Broadband"],
+    "product":          ["Broadband 50", "Broadband 100", "Mobile 20GB", "Mobile Unlimited", "Fetch TV"],
+    "script":           ["Intro followed", "Price explained", "Contract mentioned", "Closing followed", "Digital mentioned"],
+    "yes_no":           ["Yes", "No", "N/A"],
+    "status":           ["Active", "Pending", "Cancelled", "Suspended"],
+    "_default":         ["Option 1", "Option 2", "Option 3", "Option 4"],
 }
 
 
@@ -87,11 +95,20 @@ def _gen_freeform(_field: dict) -> str:
     return _random_freeform(sentences=random.randint(2, 3))
 
 
+def _gen_date(_field: dict) -> str:
+    # Random date within the last 30 days
+    now = datetime.now()
+    days_ago = random.randint(0, 30)
+    dt = now - timedelta(days=days_ago)
+    return dt.strftime("%Y-%m-%d")
+
+
 _GENERATORS = {
     "numerical":     _gen_numerical,
     "categorical":   _gen_categorical,
     "boolean":       _gen_boolean,
     "freeform_text": _gen_freeform,
+    "date":          _gen_date,
 }
 
 
