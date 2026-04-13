@@ -106,6 +106,28 @@ def fetch_sample_transcripts(call_ids: list, limit: int = 3) -> list:
         if 'conn' in locals():
             conn.close()
 
+def fetch_call_ids(where_clause: str, limit: int = 200) -> list:
+    """Fetch call IDs matching the WHERE clause, up to limit."""
+    if not config.DB_ENABLED:
+        import uuid
+        return [uuid.uuid4().hex[:10].upper() for _ in range(limit)]
+
+    import sqlite3
+    try:
+        conn = sqlite3.connect(config.SQLITE_DB_PATH)
+        cursor = conn.cursor()
+        query = f"SELECT call_id FROM calls WHERE {where_clause} LIMIT {limit}" if where_clause else f"SELECT call_id FROM calls LIMIT {limit}"
+        cursor.execute(query)
+        rows = cursor.fetchall()
+        return [row[0] for row in rows]
+    except Exception as e:
+        logger.error("DB fetch_call_ids failed: %s", e)
+        return []
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
+
 def fetch_sample_call_ids(where_clause: str, limit: int = 3) -> list:
     """Fetch sample call records for gate."""
     if not config.DB_ENABLED:

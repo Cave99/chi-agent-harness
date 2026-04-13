@@ -2,9 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "/Users/cave/Documents/Projects/CHI Explorer/frontend",
+      "port": 5173
+    },
+    {
       "name": "chi-explorer",
       "runtimeExecutable": "/bin/bash",
-      "runtimeArgs": ["-c", "/usr/bin/python3 '/Users/cave/Documents/Projects/CHI Explorer/chi-explorer/app.py'"],
+      "runtimeArgs": ["-c", "cd '/Users/cave/Documents/Projects/CHI Explorer/chi-explorer' && /usr/bin/python3 app.py"],
       "port": 5001
     }
   ]

@@ -29,7 +29,7 @@ def dispatch(call_ids: list, system_prompt: str, field_manifest: dict) -> dict:
             len(call_ids),
         )
         job_id   = f"stub-job-{uuid.uuid4().hex[:8]}"
-        jsonl    = generate_jsonl(field_manifest, count=len(call_ids))
+        jsonl    = generate_jsonl(field_manifest, count=len(call_ids), call_ids=call_ids)
         logger.warning("[STUB] Synthetic batch complete: job_id=%s, records=%d", job_id, len(call_ids))
         return {
             "job_id":  job_id,

@@ -16,14 +16,20 @@ INFERENCE_PROVIDER = os.getenv("INFERENCE_PROVIDER", "openrouter")
 DB_ENABLED    = os.getenv("DB_ENABLED", "false").lower() == "true"
 BATCH_ENABLED = os.getenv("BATCH_ENABLED", "false").lower() == "true"
 
-SQLITE_DB_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "chi_data.db")
+SQLITE_DB_PATH = os.path.join(os.path.dirname(__file__), "data", "chi_data.db")
 
 # ── OpenRouter ────────────────────────────────────────────────────────────────
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+# Provider routing order — comma-separated OpenRouter provider slugs.
+# Supports quantization suffixes, e.g. "modelrun/fp4,together,parasail/int4".
+# Leave empty to use OpenRouter's default routing.
+_provider_order_raw = os.getenv("OPENROUTER_PROVIDER_ORDER", "together,deepinfra")
+OPENROUTER_PROVIDER_ORDER: list[str] = [p.strip() for p in _provider_order_raw.split(",") if p.strip()]
+
 # Verify this slug matches the exact OpenRouter model ID for Kimi K2.5
-_DEFAULT_MODEL = "moonshotai/kimi-k2"
+_DEFAULT_MODEL = "moonshotai/kimi-k2.5"
 
 BUSINESS_AGENT_MODEL = os.getenv("BUSINESS_AGENT_MODEL", _DEFAULT_MODEL)
 CODE_AGENT_MODEL     = os.getenv("CODE_AGENT_MODEL",     _DEFAULT_MODEL)

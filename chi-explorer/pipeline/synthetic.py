@@ -97,9 +97,13 @@ _GENERATORS = {
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def generate_jsonl(field_manifest: dict, count: int = 100) -> str:
+def generate_jsonl(field_manifest: dict, count: int = 100, call_ids: list | None = None) -> str:
     """
-    Generate `count` synthetic JSONL lines conforming to `field_manifest`.
+    Generate synthetic JSONL lines conforming to `field_manifest`.
+
+    If `call_ids` is provided, each line uses the corresponding call ID as its
+    recordId so the parser can join it back to metadata. Otherwise generates
+    random IDs.
 
     Returns:
         Multi-line JSONL string. Each line is a complete JSON object matching
@@ -107,9 +111,9 @@ def generate_jsonl(field_manifest: dict, count: int = 100) -> str:
     """
     fields = field_manifest.get("fields", [])
     lines = []
+    ids = list(call_ids) if call_ids else [_random_record_id() for _ in range(count)]
 
-    for _ in range(count):
-        record_id = _random_record_id()
+    for record_id in ids:
 
         # ~3% of records simulate a batch error (no modelOutput)
         if random.random() < 0.03:

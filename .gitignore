@@ -17,6 +17,19 @@ yarn-error.log
 *.swo
 *~
 
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+env/
+venv/
+.env
+
 # Build outputs
 dist/
 build/

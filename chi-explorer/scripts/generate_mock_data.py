@@ -60,7 +60,10 @@ def generate_call_metadata(call_id):
     first    = random.choice(first_names)
     last     = random.choice(last_names)
     team     = random.choice(teams)
-    days_ago = random.randint(0, 30)
+    # Generate dates within the current calendar month only
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    days_so_far = max((now - month_start).days, 0)
+    days_ago = random.randint(0, days_so_far)
     call_dt  = now - timedelta(days=days_ago, seconds=random.randint(0, 86400))
 
     return {
@@ -127,16 +130,13 @@ def main():
     conn = init_db()
     cursor = conn.cursor()
 
-    # Check if we already have data
     cursor.execute("SELECT count(*) FROM calls")
-    if cursor.fetchone()[0] > 0:
-        print("Database already populated. Skipping generation.")
-        print("To regenerate, delete data/chi_data.db and re-run.")
-        conn.close()
-        return
-
-    num_to_generate = 50 # Increased since it's faster now
-    print(f"Generating {num_to_generate} mock transcripts in parallel via OpenRouter ({MODEL})...")
+    existing_count = cursor.fetchone()[0]
+    num_to_generate = 50
+    if existing_count > 0:
+        print(f"Database already has {existing_count} records — appending {num_to_generate} more (current month dates).")
+    else:
+        print(f"Generating {num_to_generate} mock transcripts in parallel via OpenRouter ({MODEL})...")
 
     results = []
     with ThreadPoolExecutor(max_workers=10) as pool:

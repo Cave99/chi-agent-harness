@@ -95,11 +95,36 @@ def _build_openrouter_payload(
     resolved_model = model or config.BUSINESS_AGENT_MODEL
     # Prepend system message in the messages list (OpenRouter style)
     full_messages = [{"role": "system", "content": system}] + messages
-    return {
+    payload: dict = {
         "model": resolved_model,
         "messages": full_messages,
         "stream": stream,
     }
+    if config.OPENROUTER_PROVIDER_ORDER:
+        payload["provider"] = {"order": config.OPENROUTER_PROVIDER_ORDER}
+    return payload
+
+
+def _parse_openrouter_error(resp: requests.Response) -> str:
+    """Extract a human-readable error message from an OpenRouter error response."""
+    try:
+        body = resp.json()
+        logger.error("OpenRouter error response body: %s", body)
+        # OpenRouter wraps errors as {"error": {"message": "...", "code": ..., "metadata": {...}}}
+        if "error" in body:
+            err = body["error"]
+            msg = err.get("message") or str(err)
+            code = err.get("code") or err.get("status") or resp.status_code
+            metadata = err.get("metadata") or {}
+            parts = [f"HTTP {resp.status_code} — {msg} (code: {code})"]
+            if metadata.get("provider_name"):
+                parts.append(f"provider: {metadata['provider_name']}")
+            if metadata.get("raw"):
+                parts.append(f"raw: {metadata['raw']!r}")
+            return " | ".join(parts)
+        return f"HTTP {resp.status_code} — {resp.text[:400]}"
+    except Exception:
+        return f"HTTP {resp.status_code} — {resp.text[:400]}"
 
 
 def _openrouter_chat(
@@ -119,26 +144,27 @@ def _openrouter_chat(
                 timeout=120,
             )
 
+            # 4xx errors (except 429 rate-limit) are not retryable
+            if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                detail = _parse_openrouter_error(resp)
+                logger.error("OpenRouter non-retryable error: %s", detail)
+                raise RuntimeError(f"OpenRouter request failed: {detail}")
+
             if resp.status_code == 429 or resp.status_code >= 500:
                 wait = config.PROVIDER_RETRY_BASE_SEC * (2 ** attempt)
+                detail = _parse_openrouter_error(resp)
                 logger.warning(
-                    "OpenRouter returned %s on attempt %d/%d, retrying in %ds",
-                    resp.status_code,
-                    attempt + 1,
-                    config.PROVIDER_MAX_RETRIES,
-                    wait,
+                    "OpenRouter %s on attempt %d/%d, retrying in %ds: %s",
+                    resp.status_code, attempt + 1, config.PROVIDER_MAX_RETRIES, wait, detail,
                 )
+                last_error = RuntimeError(detail)
                 time.sleep(wait)
-                last_error = RuntimeError(
-                    f"OpenRouter HTTP {resp.status_code}: {resp.text[:200]}"
-                )
                 continue
 
             resp.raise_for_status()
             data = resp.json()
             content = data["choices"][0]["message"]["content"]
             if content is None:
-                # Some models return null content on refusal or empty finish
                 raise RuntimeError(
                     f"Model returned null content. finish_reason="
                     f"{data['choices'][0].get('finish_reason')}"
@@ -146,13 +172,13 @@ def _openrouter_chat(
             return content
 
         except (requests.RequestException, RuntimeError) as exc:
+            # Don't retry if we already raised a non-retryable error above
+            if "non-retryable" in str(exc):
+                raise
             wait = config.PROVIDER_RETRY_BASE_SEC * (2 ** attempt)
             logger.warning(
                 "OpenRouter request error on attempt %d/%d: %s, retrying in %ds",
-                attempt + 1,
-                config.PROVIDER_MAX_RETRIES,
-                exc,
-                wait,
+                attempt + 1, config.PROVIDER_MAX_RETRIES, exc, wait,
             )
             time.sleep(wait)
             last_error = exc
@@ -169,6 +195,7 @@ def _openrouter_stream(
     model: Optional[str],
 ) -> Iterator[str]:
     payload = _build_openrouter_payload(messages, system, model, stream=True)
+    last_error: Optional[Exception] = None
 
     for attempt in range(config.PROVIDER_MAX_RETRIES):
         try:
@@ -179,15 +206,20 @@ def _openrouter_stream(
                 stream=True,
                 timeout=120,
             ) as resp:
+                # 4xx errors (except 429) are not retryable — fail immediately
+                if 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    detail = _parse_openrouter_error(resp)
+                    logger.error("OpenRouter stream non-retryable error: %s", detail)
+                    raise RuntimeError(f"OpenRouter request failed: {detail}")
+
                 if resp.status_code == 429 or resp.status_code >= 500:
                     wait = config.PROVIDER_RETRY_BASE_SEC * (2 ** attempt)
+                    detail = _parse_openrouter_error(resp)
                     logger.warning(
-                        "OpenRouter stream returned %s on attempt %d/%d, retrying in %ds",
-                        resp.status_code,
-                        attempt + 1,
-                        config.PROVIDER_MAX_RETRIES,
-                        wait,
+                        "OpenRouter stream %s on attempt %d/%d, retrying in %ds: %s",
+                        resp.status_code, attempt + 1, config.PROVIDER_MAX_RETRIES, wait, detail,
                     )
+                    last_error = RuntimeError(detail)
                     time.sleep(wait)
                     continue
 
@@ -204,6 +236,25 @@ def _openrouter_stream(
                         return
                     try:
                         chunk = json.loads(data_str)
+                        # Some providers surface errors inside the stream body
+                        if "error" in chunk:
+                            err = chunk["error"]
+                            err_msg = err.get("message", str(err))
+                            err_code = err.get("code") or err.get("status", "")
+                            # OpenRouter often hides the real cause in metadata
+                            metadata = err.get("metadata") or {}
+                            provider_name = metadata.get("provider_name", "")
+                            raw = metadata.get("raw", "")
+                            detail_parts = [f"message={err_msg!r}"]
+                            if err_code:
+                                detail_parts.append(f"code={err_code}")
+                            if provider_name:
+                                detail_parts.append(f"provider={provider_name!r}")
+                            if raw:
+                                detail_parts.append(f"raw={raw!r}")
+                            detail = ", ".join(detail_parts)
+                            logger.error("OpenRouter in-stream error — %s | full chunk: %s", detail, chunk)
+                            raise RuntimeError(f"OpenRouter stream error: {detail}")
                         delta = chunk["choices"][0].get("delta", {})
                         text = delta.get("content", "")
                         if text:
@@ -212,19 +263,20 @@ def _openrouter_stream(
                         continue
                 return  # stream completed successfully
 
+        except RuntimeError:
+            raise  # non-retryable or in-stream error — propagate immediately
         except requests.RequestException as exc:
             wait = config.PROVIDER_RETRY_BASE_SEC * (2 ** attempt)
             logger.warning(
                 "OpenRouter stream error on attempt %d/%d: %s, retrying in %ds",
-                attempt + 1,
-                config.PROVIDER_MAX_RETRIES,
-                exc,
-                wait,
+                attempt + 1, config.PROVIDER_MAX_RETRIES, exc, wait,
             )
+            last_error = exc
             time.sleep(wait)
 
     raise RuntimeError(
-        f"OpenRouter stream failed after {config.PROVIDER_MAX_RETRIES} attempts."
+        f"OpenRouter stream failed after {config.PROVIDER_MAX_RETRIES} attempts. "
+        f"Last error: {last_error}"
     )
 
 

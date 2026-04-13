@@ -66,9 +66,11 @@ Table: `calls` (table name uncertain — use with caution)
 
 Only reference columns that exist in this schema. If filtering by team, use `team_name`. If filtering by date, use `call_datetime`.
 
-Example WHERE clauses:
+Example WHERE clauses (SQLite syntax):
 - `team_name = 'Retention'`
-- `call_datetime >= CURRENT_DATE - INTERVAL '30 days'`
+- `call_datetime >= date('now', '-30 days')`
+- `call_datetime >= date('now', 'start of month')`
+- `call_datetime >= date('now', 'start of month') AND call_datetime < date('now', 'start of month', '+1 month')`
 - `team_name IN ('Sales', 'Retention') AND call_duration > 120`
 - `call_datetime >= '2026-01-01'`
 
@@ -150,13 +152,71 @@ RESPOND IN ONLY VALID JSON AS FOLLOWS:
 
 - Output only the WHERE clause body — no SELECT, no FROM, no WHERE keyword
 - Only reference columns from the schema above
-- Use standard SQL syntax compatible with PostgreSQL
+- Use **SQLite** date/time functions — NOT PostgreSQL syntax
 - If the question does not require a filter (i.e. all calls), output an empty string ""
 - Do not invent columns that do not exist in the schema
 """
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
+
+def analyse_stream(question: str, on_token=None) -> dict:
+    """
+    Like analyse(), but streams the first LLM attempt, calling on_token(chunk)
+    for each text chunk as it arrives. Falls back to a regular blocking call
+    on the retry turn so error-correction still works.
+
+    Args:
+        question: Natural language business question.
+        on_token: Optional callable(str) invoked per streamed chunk.
+
+    Returns:
+        Dict with keys: where_clause, system_prompt, field_manifest.
+    """
+    messages = [{"role": "user", "content": question}]
+    last_error = None
+
+    for attempt in range(2):
+        if attempt == 0:
+            # Stream the first attempt so callers can show live progress
+            raw_chunks: list[str] = []
+            for chunk in provider.stream(messages, SYSTEM_PROMPT, model=config.BUSINESS_AGENT_MODEL):
+                raw_chunks.append(chunk)
+                if on_token:
+                    on_token(chunk)
+            raw = "".join(raw_chunks)
+        else:
+            # Retry with a regular (blocking) call
+            raw = provider.chat(messages, SYSTEM_PROMPT, model=config.BUSINESS_AGENT_MODEL)
+
+        try:
+            result = _parse_json_response(raw)
+            _validate_result(result)
+            return result
+        except (ValueError, KeyError) as exc:
+            logger.warning(
+                "Business Agent stream attempt %d: JSON parse/validation failed: %s",
+                attempt + 1, exc,
+            )
+            last_error = exc
+            messages = messages + [
+                {"role": "assistant", "content": raw},
+                {
+                    "role": "user",
+                    "content": (
+                        f"Your response was not valid JSON or was missing required keys. "
+                        f"Error: {exc}. "
+                        f"Please respond with ONLY a valid JSON object containing exactly the keys: "
+                        f"where_clause, system_prompt, field_manifest."
+                    ),
+                },
+            ]
+
+    raise ValueError(
+        f"Business Agent failed to produce valid JSON after 2 attempts. "
+        f"Last error: {last_error}"
+    )
+
 
 def analyse(question: str) -> dict:
     """
@@ -277,20 +337,34 @@ def analyse_with_refinement(
 
 def _parse_json_response(raw: str) -> dict:
     """Extract JSON from model response, handling markdown code fences."""
-    # Strip markdown code fences if present
     text = raw.strip()
-    fence_match = re.search(r"```(?:json)?\s*([\s\S]+?)\s*```", text)
-    if fence_match:
-        text = fence_match.group(1).strip()
 
+    # Try direct parse first (model responded with bare JSON)
     try:
         return json.loads(text)
-    except json.JSONDecodeError as exc:
-        # Try to find a JSON object in the response
-        obj_match = re.search(r"\{[\s\S]+\}", text)
-        if obj_match:
-            return json.loads(obj_match.group(0))
-        raise ValueError(f"Could not extract JSON from response: {exc}") from exc
+    except json.JSONDecodeError:
+        pass
+
+    # Strip only the *outermost* code fence — non-greedy would stop at any
+    # inner fence (e.g. the example JSON block inside system_prompt).
+    fence_match = re.match(r"^```(?:json)?\s*([\s\S]+)\s*```\s*$", text)
+    if fence_match:
+        inner = fence_match.group(1).strip()
+        try:
+            return json.loads(inner)
+        except json.JSONDecodeError:
+            text = inner  # fall through to brace-extraction below
+
+    # Last resort: find outermost {...} by position
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end > start:
+        try:
+            return json.loads(text[start : end + 1])
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Could not extract JSON from response: {exc}") from exc
+
+    raise ValueError("Could not find JSON object in response")
 
 
 def _validate_result(result: dict) -> None:

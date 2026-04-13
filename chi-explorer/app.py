@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+import threading
 import uuid
 import asyncio
 
@@ -24,7 +26,7 @@ from sse_starlette.sse import EventSourceResponse
 
 import config
 from agents import business_agent, briefing_agent, code_agent, vision_agent
-from pipeline import batch, db, parser
+from pipeline import batch, db, parser, provider
 import session.state as state
 
 import sqlglot
@@ -64,6 +66,70 @@ def _estimate_cost(call_count: int, field_count: int) -> float:
     tokens_per_call = 800 + field_count * 50
     total_tokens = call_count * tokens_per_call
     return round(total_tokens / 1_000_000 * 3.0, 2)
+
+
+async def _stream_business_agent(sid: str, question: str) -> dict:
+    """
+    Stream the Business Agent's first LLM attempt, pushing background_token events
+    for each chunk so the UI can show live generation progress.
+    Returns the parsed plan dict.
+    """
+    loop = asyncio.get_running_loop()
+    async_q: asyncio.Queue = asyncio.Queue()
+
+    def _produce() -> None:
+        def on_token(chunk: str) -> None:
+            loop.call_soon_threadsafe(async_q.put_nowait, ("token", chunk))
+        try:
+            plan = business_agent.analyse_stream(question, on_token=on_token)
+            loop.call_soon_threadsafe(async_q.put_nowait, ("done", plan))
+        except Exception as exc:
+            loop.call_soon_threadsafe(async_q.put_nowait, ("error", exc))
+
+    threading.Thread(target=_produce, daemon=True).start()
+
+    while True:
+        kind, value = await async_q.get()
+        if kind == "token":
+            await _push_event(sid, "background_token", {"text": value})
+        elif kind == "done":
+            return value  # type: ignore[return-value]
+        elif kind == "error":
+            raise value
+
+
+async def _stream_via_thread(sid: str, messages: list, system: str, model: str) -> str:
+    """
+    Run provider.stream() (a sync generator) in a background thread, forwarding
+    each text chunk as a 'token' SSE event to the session queue.
+
+    Returns the full concatenated response text.
+    """
+    loop = asyncio.get_running_loop()
+    async_q: asyncio.Queue = asyncio.Queue()
+
+    def _produce() -> None:
+        try:
+            for chunk in provider.stream(messages, system, model):
+                loop.call_soon_threadsafe(async_q.put_nowait, chunk)
+        except Exception as exc:
+            loop.call_soon_threadsafe(async_q.put_nowait, exc)
+        finally:
+            loop.call_soon_threadsafe(async_q.put_nowait, None)  # sentinel
+
+    threading.Thread(target=_produce, daemon=True).start()
+
+    full_text = ""
+    while True:
+        item = await async_q.get()
+        if item is None:
+            break
+        if isinstance(item, Exception):
+            raise item
+        full_text += item
+        await _push_event(sid, "token", {"text": item})
+
+    return full_text
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -265,19 +331,19 @@ async def reset():
 # ── Tasks ───────────────────────────────────────────────────────────────────
 
 async def _run_business_agent_task(sid: str, question: str, refinement: str | None = None, current_plan: dict | None = None) -> None:
-    # Since agent APIs use standard sync requests, we offload to threads
-    def _run():
-        if refinement:
-            return business_agent.analyse_with_refinement(question, refinement, current_plan)
-        return business_agent.analyse(question)
-
     try:
+        t0 = time.perf_counter()
         if refinement:
             await _push_event(sid, "status", {"message": f"Refining your plan: {refinement[:60]}…"})
+            plan = await asyncio.to_thread(
+                business_agent.analyse_with_refinement, question, refinement, current_plan
+            )
         else:
             await _push_event(sid, "status", {"message": "Reading your question and building an analysis plan…"})
-            
-        plan = await asyncio.to_thread(_run)
+            # Stream the first attempt — background_token events feed the UI indicator
+            plan = await _stream_business_agent(sid, question)
+
+        logger.info("[TIMING] Business Agent LLM: %.2fs", time.perf_counter() - t0)
         
         where_clause   = plan["where_clause"]
         system_prompt  = plan["system_prompt"]
@@ -322,62 +388,87 @@ async def _run_business_agent_task(sid: str, question: str, refinement: str | No
 
 async def _run_pipeline_task(sid: str, question: str, where_clause: str, system_prompt: str, field_manifest: dict) -> None:
     try:
+        t_pipeline = time.perf_counter()
+
+        # ── 1. Count + fetch call IDs ──────────────────────────────────────────
         await _push_event(sid, "status", {"message": "Dispatching batch job…"})
+        t = time.perf_counter()
         count_result = await asyncio.to_thread(db.count_calls, where_clause)
         call_count   = min(count_result["count"], 200)
+        logger.info("[TIMING] DB count: %.2fs  (%d calls matched)", time.perf_counter() - t, call_count)
 
-        import uuid as _uuid
-        call_ids = [_uuid.uuid4().hex[:10].upper() for _ in range(call_count)]
+        call_ids = await asyncio.to_thread(db.fetch_call_ids, where_clause, call_count)
 
+        # ── 2. Fetch metadata ──────────────────────────────────────────────────
         await _push_event(sid, "status", {"message": f"Fetching metadata for {call_count} calls…"})
+        t = time.perf_counter()
         metadata = await asyncio.to_thread(db.fetch_call_metadata, call_ids)
         metadata_by_id = {m["call_id"]: m for m in metadata}
         state.update_job(sid, metadata=metadata)
+        logger.info("[TIMING] Metadata fetch: %.2fs", time.perf_counter() - t)
 
-        await _push_event(sid, "status", {"message": f"Analysing {call_count} call transcripts (synthetic data)…"})
+        # ── 3. Batch LLM analysis ──────────────────────────────────────────────
+        await _push_event(sid, "status", {"message": f"Analysing {call_count} call transcripts…"})
+        t = time.perf_counter()
         batch_result = await asyncio.to_thread(batch.dispatch, call_ids, system_prompt, field_manifest)
         state.update_job(sid, job_id=batch_result["job_id"])
+        logger.info("[TIMING] Batch dispatch: %.2fs", time.perf_counter() - t)
 
+        # ── 4. Parse results ───────────────────────────────────────────────────
         await _push_event(sid, "status", {"message": "Parsing and structuring AI responses…"})
+        t = time.perf_counter()
         summary = await asyncio.to_thread(parser.parse, batch_result["jsonl"], field_manifest, metadata_by_id)
         state.update(sid, last_summary_dict=summary)
+        logger.info("[TIMING] Parser: %.2fs", time.perf_counter() - t)
 
+        # ── 5. Briefing agent ──────────────────────────────────────────────────
         await _push_event(sid, "status", {"message": "Briefing chart generation agent…"})
+        t = time.perf_counter()
         brief_text = await asyncio.to_thread(briefing_agent.brief, question, summary)
+        logger.info("[TIMING] Briefing Agent LLM: %.2fs", time.perf_counter() - t)
 
-        await _push_event(sid, "status", {"message": "Generating visualization configurations…"})
-        # Now returns JSON spec for recharts
+        # ── 6. Code agent → chart specs ────────────────────────────────────────
+        await _push_event(sid, "status", {"message": "Generating visualizations…"})
+        t = time.perf_counter()
         json_charts_str = await asyncio.to_thread(code_agent.generate_script, brief_text, summary)
-        
-        # safely parse the charts JSON definition
+        logger.info("[TIMING] Code Agent LLM: %.2fs", time.perf_counter() - t)
+
+        # Safely parse the charts JSON
         try:
-            # Code agent might wrap in block quotes
             raw_json = json_charts_str.strip()
-            if raw_json.startswith('```'):
-                lines = raw_json.split('\\n')
-                if lines[0].startswith('```'): lines = lines[1:]
-                if lines[-1].startswith('```'): lines = lines[:-1]
-                raw_json = '\\n'.join(lines).strip()
-            
+            if raw_json.startswith("```"):
+                lines = raw_json.split("\n")
+                if lines[0].startswith("```"):
+                    lines = lines[1:]
+                if lines and lines[-1].startswith("```"):
+                    lines = lines[:-1]
+                raw_json = "\n".join(lines).strip()
             charts = json.loads(raw_json)
             if not isinstance(charts, list):
                 charts = [charts]
         except Exception as parse_e:
-            logger.warning(f"Failed to parse Recharts JSON payload: {parse_e}")
+            logger.warning("Failed to parse Recharts JSON payload: %s", parse_e)
             charts = []
 
         state.update(sid, last_charts=charts)
 
+        # ── 7. Vision agent → executive summary (streamed) ────────────────────
         await _push_event(sid, "status", {"message": "Writing executive summary…"})
+        t = time.perf_counter()
+
         field_names = [f["name"] for f in field_manifest.get("fields", [])]
         chart_descriptions = [
             f"Chart {i+1}: visualization of call analysis data ({', '.join(field_names[:3])})"
             for i in range(len(charts))
         ]
-        
-        # The Vision agent historically took images. Now it takes json charts raw array strings
         chart_json_str = [json.dumps(c) for c in charts]
-        summary_text = await asyncio.to_thread(vision_agent.analyse, question, chart_json_str, chart_descriptions)
+        va_messages = vision_agent.build_messages(question, chart_json_str, chart_descriptions)
+
+        summary_text = await _stream_via_thread(
+            sid, va_messages, vision_agent.SYSTEM_PROMPT, config.VISION_AGENT_MODEL
+        )
+        logger.info("[TIMING] Vision Agent LLM (streamed): %.2fs", time.perf_counter() - t)
+        logger.info("[TIMING] Total pipeline: %.2fs", time.perf_counter() - t_pipeline)
 
         state.append_message(sid, "assistant", summary_text, msg_type="results")
         state.update_job(sid, status="complete")
@@ -385,7 +476,7 @@ async def _run_pipeline_task(sid: str, question: str, where_clause: str, system_
         await _push_event(sid, "complete", {
             "html": None,
             "summary": summary_text,
-            "charts": charts
+            "charts": charts,
         })
 
     except Exception as exc:
