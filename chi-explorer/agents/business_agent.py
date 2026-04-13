@@ -1,21 +1,18 @@
 """
 agents/business_agent.py — Business Agent.
 
-Takes a natural language question and returns a structured analysis plan:
-  - where_clause: SQL WHERE conditions (no SELECT/FROM)
-  - system_prompt: full novel prompt to run on each transcript
-  - field_manifest: output field definitions for the parser
-
-Also handles the second-pass briefing (summary dict → plain-text brief for
-Code Agent) and the vision pass (charts → executive summary).
+Takes a natural language question and returns a structured analysis plan.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+import asyncio
+from typing import Any, Dict, Optional, Callable
 
 from pipeline import provider
+from agents.base import BaseAgent
 import config
 
 logger = logging.getLogger(__name__)
@@ -157,278 +154,156 @@ RESPOND IN ONLY VALID JSON AS FOLLOWS:
 - Do not invent columns that do not exist in the schema
 """
 
+class BusinessAgent(BaseAgent):
+    def run(self, question: str, refinement: Optional[str] = None, current_plan: Optional[Dict] = None) -> Dict[str, Any]:
+        """Synchronous entry point for analysis or refinement."""
+        if refinement:
+            return self.analyse_with_refinement(question, refinement, current_plan)
+        return self.analyse(question)
 
-# ── Public API ────────────────────────────────────────────────────────────────
+    async def run_async(self, question: str, refinement: Optional[str] = None, current_plan: Optional[Dict] = None) -> Dict[str, Any]:
+        """Asynchronous entry point."""
+        return await asyncio.to_thread(self.run, question, refinement, current_plan)
 
-def analyse_stream(question: str, on_token=None) -> dict:
-    """
-    Like analyse(), but streams the first LLM attempt, calling on_token(chunk)
-    for each text chunk as it arrives. Falls back to a regular blocking call
-    on the retry turn so error-correction still works.
-
-    Args:
-        question: Natural language business question.
-        on_token: Optional callable(str) invoked per streamed chunk.
-
-    Returns:
-        Dict with keys: where_clause, system_prompt, field_manifest.
-    """
-    messages = [{"role": "user", "content": question}]
-    last_error = None
-
-    for attempt in range(2):
-        if attempt == 0:
-            # Stream the first attempt so callers can show live progress
-            raw_chunks: list[str] = []
-            for chunk in provider.stream(messages, SYSTEM_PROMPT, model=config.BUSINESS_AGENT_MODEL):
-                raw_chunks.append(chunk)
-                if on_token:
-                    on_token(chunk)
-            raw = "".join(raw_chunks)
-        else:
-            # Retry with a regular (blocking) call
+    def analyse(self, question: str) -> Dict[str, Any]:
+        """Run the Business Agent on a user question with retries."""
+        messages = [{"role": "user", "content": question}]
+        last_error = None
+        for attempt in range(2):
             raw = provider.chat(messages, SYSTEM_PROMPT, model=config.BUSINESS_AGENT_MODEL)
+            try:
+                result = self._parse_json_response(raw)
+                self._validate_result(result)
+                return result
+            except (ValueError, KeyError) as exc:
+                logger.warning("Business Agent attempt %d failed: %s", attempt + 1, exc)
+                last_error = exc
+                messages = messages + [
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": f"Your response was not valid JSON or was missing required keys. Error: {exc}. Please respond with ONLY a valid JSON object containing exactly the keys: where_clause, system_prompt, field_manifest."}
+                ]
+        raise ValueError(f"Business Agent failed after 2 attempts. Last error: {last_error}")
 
-        try:
-            result = _parse_json_response(raw)
-            _validate_result(result)
-            return result
-        except (ValueError, KeyError) as exc:
-            logger.warning(
-                "Business Agent stream attempt %d: JSON parse/validation failed: %s",
-                attempt + 1, exc,
+    def analyse_stream(self, question: str, on_token: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+        """Stream the first attempt, fall back to blocking for retries."""
+        messages = [{"role": "user", "content": question}]
+        last_error = None
+
+        for attempt in range(2):
+            if attempt == 0:
+                raw_chunks: list[str] = []
+                for chunk in provider.stream(messages, SYSTEM_PROMPT, model=config.BUSINESS_AGENT_MODEL):
+                    raw_chunks.append(chunk)
+                    if on_token:
+                        on_token(chunk)
+                raw = "".join(raw_chunks)
+            else:
+                raw = provider.chat(messages, SYSTEM_PROMPT, model=config.BUSINESS_AGENT_MODEL)
+
+            try:
+                result = self._parse_json_response(raw)
+                self._validate_result(result)
+                return result
+            except (ValueError, KeyError) as exc:
+                logger.warning("Business Agent stream attempt %d failed: %s", attempt + 1, exc)
+                last_error = exc
+                messages = messages + [
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": f"Your response was not valid JSON or missing keys. Error: {exc}."}
+                ]
+        raise ValueError(f"Business Agent stream failed after 2 attempts. Last error: {last_error}")
+
+    def analyse_with_refinement(self, question: str, refinement: str, current_plan: Optional[Dict] = None) -> Dict[str, Any]:
+        """Re-run with refinement instruction."""
+        if current_plan:
+            current_plan_json = json.dumps(current_plan, indent=2)
+            context_block = (
+                f"Here is the CURRENT analysis plan that already exists:\n\n"
+                f"```json\n{current_plan_json}\n```\n\n"
+                f"The user wants to refine it with this instruction: {refinement}\n\n"
+                f"Respond with a complete, updated JSON object that incorporates the change while keeping all unchanged parts intact."
             )
-            last_error = exc
-            messages = messages + [
-                {"role": "assistant", "content": raw},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Your response was not valid JSON or was missing required keys. "
-                        f"Error: {exc}. "
-                        f"Please respond with ONLY a valid JSON object containing exactly the keys: "
-                        f"where_clause, system_prompt, field_manifest."
-                    ),
-                },
-            ]
+        else:
+            context_block = f"Please update your analysis plan based on this refinement: {refinement}\n\nRespond with a fresh, complete JSON object."
 
-    raise ValueError(
-        f"Business Agent failed to produce valid JSON after 2 attempts. "
-        f"Last error: {last_error}"
-    )
+        messages = [
+            {"role": "user", "content": question},
+            {"role": "user", "content": context_block},
+        ]
 
+        last_error = None
+        for attempt in range(2):
+            raw = provider.chat(messages, SYSTEM_PROMPT, model=config.BUSINESS_AGENT_MODEL)
+            try:
+                result = self._parse_json_response(raw)
+                self._validate_result(result)
+                return result
+            except (ValueError, KeyError) as exc:
+                logger.warning("Business Agent refinement attempt %d failed: %s", attempt + 1, exc)
+                last_error = exc
+                messages = messages + [
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": f"Your response was not valid JSON. Error: {exc}."}
+                ]
+        raise ValueError(f"Business Agent refinement failed after 2 attempts. Last error: {last_error}")
 
-def analyse(question: str) -> dict:
-    """
-    Run the Business Agent on a user question.
+    def route_question(self, question: str, context: Dict[str, Any]) -> str:
+        """Decide if follow-up or new analysis."""
+        if not context.get("has_data"):
+            return "new_analysis"
 
-    Args:
-        question: Natural language business question.
-
-    Returns:
-        Dict with keys: where_clause (str), system_prompt (str), field_manifest (dict).
-
-    Raises:
-        ValueError: If the model output cannot be parsed as valid JSON after retries.
-    """
-    messages = [{"role": "user", "content": question}]
-
-    last_error = None
-    for attempt in range(2):
-        raw = provider.chat(messages, SYSTEM_PROMPT, model=config.BUSINESS_AGENT_MODEL)
-        try:
-            result = _parse_json_response(raw)
-            _validate_result(result)
-            return result
-        except (ValueError, KeyError) as exc:
-            logger.warning(
-                "Business Agent attempt %d: JSON parse/validation failed: %s",
-                attempt + 1, exc,
-            )
-            last_error = exc
-            # Feed the error back so the model can self-correct
-            messages = messages + [
-                {"role": "assistant", "content": raw},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Your response was not valid JSON or was missing required keys. "
-                        f"Error: {exc}. "
-                        f"Please respond with ONLY a valid JSON object containing exactly the keys: "
-                        f"where_clause, system_prompt, field_manifest."
-                    ),
-                },
-            ]
-
-    raise ValueError(
-        f"Business Agent failed to produce valid JSON after 2 attempts. "
-        f"Last error: {last_error}"
-    )
-
-
-def analyse_with_refinement(
-    question: str,
-    refinement: str,
-    current_plan: dict | None = None,
-) -> dict:
-    """
-    Re-run the Business Agent with the original question plus a refinement
-    instruction, optionally providing the current plan as context.
-
-    Args:
-        question:       The original natural language question.
-        refinement:     The user's refinement instruction.
-        current_plan:   The existing plan dict (where_clause, system_prompt,
-                        field_manifest) to use as context for targeted editing.
-
-    Returns:
-        Dict with keys: where_clause, system_prompt, field_manifest.
-    """
-    if current_plan:
-        current_plan_json = json.dumps(current_plan, indent=2)
-        context_block = (
-            f"Here is the CURRENT analysis plan that already exists:\n\n"
-            f"```json\n{current_plan_json}\n```\n\n"
-            f"The user wants to refine it with this instruction: {refinement}\n\n"
-            f"Respond with a complete, updated JSON object that incorporates the change "
-            f"while keeping all unchanged parts intact."
-        )
-    else:
-        context_block = (
-            f"Please update your analysis plan based on this refinement: {refinement}\n\n"
-            f"Respond with a fresh, complete JSON object incorporating the change."
-        )
-
-    messages = [
-        {"role": "user", "content": question},
-        {"role": "user", "content": context_block},
-    ]
-
-    last_error = None
-    for attempt in range(2):
-        raw = provider.chat(messages, SYSTEM_PROMPT, model=config.BUSINESS_AGENT_MODEL)
-        try:
-            result = _parse_json_response(raw)
-            _validate_result(result)
-            return result
-        except (ValueError, KeyError) as exc:
-            logger.warning(
-                "Business Agent refinement attempt %d failed: %s", attempt + 1, exc
-            )
-            last_error = exc
-            messages = messages + [
-                {"role": "assistant", "content": raw},
-                {
-                    "role": "user",
-                    "content": (
-                        f"Your response was not valid JSON. Error: {exc}. "
-                        f"Please respond with ONLY a valid JSON object containing exactly the keys: "
-                        f"where_clause, system_prompt, field_manifest."
-                    ),
-                },
-            ]
-
-    raise ValueError(
-        f"Business Agent refinement failed after 2 attempts. Last error: {last_error}"
-    )
-
-
-def route_question(question: str, context: dict) -> str:
-    """
-    Decide if a user question is a new analysis request or a follow-up on 
-    existing data in the session.
-
-    Args:
-        question: The user's new question.
-        context:  A dict containing:
-                    - previous_question: (str)
-                    - field_manifest: (dict)
-                    - summary: (dict)
-                    - has_data: (bool)
-
-    Returns:
-        One of: "new_analysis", "follow_up".
-    """
-    if not context.get("has_data"):
-        return "new_analysis"
-
-    prompt = f"""You are a query router. Your goal is to decide if a business question 
-is a completely NEW analysis request (requiring different call transcripts) or 
-a FOLLOW-UP question that can be answered using the data already retrieved in 
-the current session.
-
-## Existing Session Context
+        prompt = f"""You are a query router. Decided if follow-up or new analysis.
 Original Question: {context.get("previous_question", "None")}
 Extracted Fields: {", ".join(f["name"] for f in context.get("field_manifest", {}).get("fields", []))}
-Summary Findings: {json.dumps(context.get("summary", {}))[:1000]}
+New Question: {question}
+Respond with exactly 'new_analysis' or 'follow_up'."""
 
-## New User Question
-{question}
+        raw = provider.chat(
+            messages=[{"role": "user", "content": prompt}],
+            system="You are a query router. Output exactly one word.",
+            model=config.BUSINESS_AGENT_MODEL,
+        )
+        decision = raw.strip().lower()
+        return "follow_up" if "follow_up" in decision else "new_analysis"
 
-## Routing Decision Logic:
-- If the user wants to see DIFFERENT calls or filter by a DIFFERENT date range/team than the original question, route as "new_analysis".
-- If the user wants to drill into specific agents, teams, or values ALREADY extracted, or asks for different charts/stats of the SAME data, route as "follow_up".
-
-Respond with exactly one word: "new_analysis" or "follow_up"."""
-
-    raw = provider.chat(
-        messages=[{"role": "user", "content": prompt}],
-        system="You are a query router. Output exactly one word.",
-        model=config.BUSINESS_AGENT_MODEL,
-    )
-
-    decision = raw.strip().lower()
-    if "follow_up" in decision:
-        return "follow_up"
-    return "new_analysis"
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-def _parse_json_response(raw: str) -> dict:
-    """Extract JSON from model response, handling markdown code fences."""
-    text = raw.strip()
-
-    # Try direct parse first (model responded with bare JSON)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Strip only the *outermost* code fence — non-greedy would stop at any
-    # inner fence (e.g. the example JSON block inside system_prompt).
-    fence_match = re.match(r"^```(?:json)?\s*([\s\S]+)\s*```\s*$", text)
-    if fence_match:
-        inner = fence_match.group(1).strip()
+    def _parse_json_response(self, raw: str) -> Dict[str, Any]:
+        """Extract JSON from response."""
+        text = raw.strip()
         try:
-            return json.loads(inner)
+            return json.loads(text)
         except json.JSONDecodeError:
-            text = inner  # fall through to brace-extraction below
+            pass
 
-    # Last resort: find outermost {...} by position
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end > start:
-        try:
-            return json.loads(text[start : end + 1])
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Could not extract JSON from response: {exc}") from exc
+        fence_match = re.match(r"^```(?:json)?\s*([\s\S]+)\s*```\s*$", text)
+        if fence_match:
+            inner = fence_match.group(1).strip()
+            try:
+                return json.loads(inner)
+            except json.JSONDecodeError:
+                text = inner
 
-    raise ValueError("Could not find JSON object in response")
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end > start:
+            try:
+                return json.loads(text[start : end + 1])
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Could not extract JSON: {exc}") from exc
+        raise ValueError("Could not find JSON object")
 
+    def _validate_result(self, result: Dict[str, Any]) -> None:
+        """Validate result keys and structure."""
+        for key in ("where_clause", "system_prompt", "field_manifest"):
+            if key not in result:
+                raise ValueError(f"Missing required key: {key!r}")
+        manifest = result["field_manifest"]
+        if not isinstance(manifest, dict) or "fields" not in manifest:
+            raise ValueError("field_manifest must be a dict with a 'fields' key")
 
-def _validate_result(result: dict) -> None:
-    """Raise ValueError if required keys are missing or malformed."""
-    for key in ("where_clause", "system_prompt", "field_manifest"):
-        if key not in result:
-            raise ValueError(f"Missing required key: {key!r}")
+_agent = BusinessAgent()
 
-    manifest = result["field_manifest"]
-    if not isinstance(manifest, dict) or "fields" not in manifest:
-        raise ValueError("field_manifest must be a dict with a 'fields' key")
-
-    for field in manifest["fields"]:
-        if "name" not in field or "type" not in field:
-            raise ValueError(f"Field missing 'name' or 'type': {field}")
-        if field["type"] not in ("numerical", "categorical", "boolean", "freeform_text", "date"):
-            raise ValueError(f"Unknown field type: {field['type']!r}")
+# Module-level aliases so callers can use `business_agent.analyse_stream(...)` etc.
+# (orchestrator and app.py import the module, not the instance)
+analyse_stream = _agent.analyse_stream
+analyse_with_refinement = _agent.analyse_with_refinement
+route_question = _agent.route_question

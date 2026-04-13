@@ -1,14 +1,16 @@
 """
 agents/vision_agent.py — Vision Agent.
 
-Receives chart images (base64 PNG) + the user's original question and writes
-an executive summary with key findings and follow-up questions.
+Receives chart data + the user's original question and writes an executive summary.
 """
 from __future__ import annotations
 
 import logging
+import asyncio
+from typing import Any, Dict, List, Optional
 
 from pipeline import provider
+from agents.base import BaseAgent
 import config
 
 logger = logging.getLogger(__name__)
@@ -42,41 +44,34 @@ Ask the user 2–3 specific follow-up questions to guide next steps. Examples of
 - No corporate hedging language
 """
 
+class VisionAgent(BaseAgent):
+    def run(self, question: str, charts: List, chart_descriptions: List) -> str:
+        """Synchronous entry point to produce an executive summary."""
+        return self.analyse(question, charts, chart_descriptions)
 
-def build_messages(question: str, charts: list, chart_descriptions: list) -> list:
-    """
-    Build the message payload for the vision agent without calling the LLM.
-    Charts are Recharts JSON specs (not images) so they are included as text.
-    Shared by analyse() and the streaming path in app.py.
-    """
-    chart_blocks = "\n\n".join(
-        f"Chart {i+1} — {chart_descriptions[i] if i < len(chart_descriptions) else ''}:\n```json\n{chart}\n```"
-        for i, chart in enumerate(charts)
-    )
-    content = (
-        f"User's original question: {question}\n\n"
-        f"Below are the chart data specifications (Recharts JSON) produced by the analysis.\n"
-        f"Treat these as the data source and write your analytical response.\n\n"
-        f"{chart_blocks}"
-    )
-    return [{"role": "user", "content": content}]
+    async def run_async(self, question: str, charts: List, chart_descriptions: List) -> str:
+        """Asynchronous entry point."""
+        return await asyncio.to_thread(self.run, question, charts, chart_descriptions)
 
+    def build_messages(self, question: str, charts: List, chart_descriptions: List) -> List:
+        chart_blocks = "\n\n".join(
+            f"Chart {i+1} — {chart_descriptions[i] if i < len(chart_descriptions) else ''}:\n```json\n{chart}\n```"
+            for i, chart in enumerate(charts)
+        )
+        content = (
+            f"User's original question: {question}\n\n"
+            f"Below are the chart data specifications (Recharts JSON) produced by the analysis.\n"
+            f"Treat these as the data source and write your analytical response.\n\n"
+            f"{chart_blocks}"
+        )
+        return [{"role": "user", "content": content}]
 
-def analyse(question: str, charts: list, chart_descriptions: list) -> str:
-    """
-    Produce an executive summary from chart data (blocking).
+    def analyse(self, question: str, charts: List, chart_descriptions: List) -> str:
+        messages = self.build_messages(question, charts, chart_descriptions)
+        return provider.chat(
+            messages=messages,
+            system=SYSTEM_PROMPT,
+            model=config.VISION_AGENT_MODEL,
+        )
 
-    Args:
-        question:           The user's original question.
-        charts:             List of base64-encoded PNG strings (or JSON chart specs).
-        chart_descriptions: List of strings describing each chart.
-
-    Returns:
-        Markdown-formatted executive summary string.
-    """
-    messages = build_messages(question, charts, chart_descriptions)
-    return provider.chat(
-        messages=messages,
-        system=SYSTEM_PROMPT,
-        model=config.VISION_AGENT_MODEL,
-    )
+vision_agent = VisionAgent()

@@ -67,6 +67,6 @@ All settings live in `config.py` / `.env`:
 | `BUSINESS_AGENT_MODEL` | `moonshotai/kimi-k2` | OpenRouter model slug |
 | `CODE_AGENT_MODEL` | same | Can be a cheaper model |
 | `VISION_AGENT_MODEL` | same | Must support vision |
-| `FLASK_PORT` | `5001` | port 5000 is taken by macOS ControlCenter |
+| `API_PORT` | `5001` | port 5000 is taken by macOS ControlCenter |
 | `COST_WARN_THRESHOLD_USD` | `3.00` | Warning threshold on approval gate |
 | `CALL_COUNT_WARN_THRESHOLD` | `1000` | Warning threshold on approval gate |

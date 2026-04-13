@@ -40,10 +40,10 @@ COST_WARN_THRESHOLD_USD    = float(os.getenv("COST_WARN_THRESHOLD_USD", "3.00"))
 CALL_COUNT_WARN_THRESHOLD  = int(os.getenv("CALL_COUNT_WARN_THRESHOLD", "1000"))
 POLL_INTERVAL_SECONDS      = int(os.getenv("POLL_INTERVAL_SECONDS", "60"))
 
-# ── Flask ─────────────────────────────────────────────────────────────────────
-FLASK_SECRET_KEY = os.getenv("FLASK_SECRET_KEY", "dev-secret-change-me")
-FLASK_PORT       = int(os.getenv("FLASK_PORT", "5001"))
-FLASK_DEBUG      = os.getenv("FLASK_ENV", "development") == "development"
+# ── API / App ─────────────────────────────────────────────────────────────────
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-change-me")
+API_PORT   = int(os.getenv("API_PORT", "5001"))
+APP_DEBUG  = os.getenv("APP_ENV", "development") == "development"
 
 # ── Provider retry settings ───────────────────────────────────────────────────
 PROVIDER_MAX_RETRIES    = 3

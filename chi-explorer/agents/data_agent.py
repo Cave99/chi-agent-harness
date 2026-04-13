@@ -1,18 +1,18 @@
 """
 agents/data_agent.py — Data Agent.
 
-Receives a user question, the field manifest, and a sample of the data.
-Generates a Python script that uses Pandas to perform data analysis over the
-full dataset (available as a DataFrame 'df') and produce a text answer and
-Recharts JSON configuration.
+Generates a Python script that uses Pandas to perform data analysis.
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+import asyncio
+from typing import Any, Dict, Optional, List
 
 from pipeline import provider
+from agents.base import BaseAgent
 import config
 
 logger = logging.getLogger(__name__)
@@ -66,20 +66,17 @@ Colors to use: `#ac3500`, `#ffb233`, `#5f5e5e`, `#6366f1`.
 8.  Produce output ONLY as a raw Python script. No markdown, no explanation.
 """
 
+class DataAgent(BaseAgent):
+    def run(self, question: str, field_manifest: Dict, sample_records: List[Dict]) -> str:
+        """Synchronous entry point to generate the script."""
+        return self.generate_script(question, field_manifest, sample_records)
 
-def generate_script(question: str, field_manifest: dict, sample_records: list[dict]) -> str:
-    """
-    Generate a Python script to analyze the data and answer the question.
+    async def run_async(self, question: str, field_manifest: Dict, sample_records: List[Dict]) -> str:
+        """Asynchronous entry point."""
+        return await asyncio.to_thread(self.run, question, field_manifest, sample_records)
 
-    Args:
-        question:       The user's business question (or follow-up).
-        field_manifest: The schema of the extracted data.
-        sample_records: A small sample of enriched records to show the LLM the structure.
-
-    Returns:
-        The Python script code as a string.
-    """
-    prompt = f"""User Question: {question}
+    def generate_script(self, question: str, field_manifest: Dict, sample_records: List[Dict]) -> str:
+        prompt = f"""User Question: {question}
 
 Data Schema (Field Manifest):
 {json.dumps(field_manifest, indent=2)}
@@ -89,15 +86,16 @@ Data Sample (first 3 records):
 
 Write the Python script now. Populate `answer` and `charts`.
 """
-    raw = provider.chat(
-        messages=[{"role": "user", "content": prompt}],
-        system=SYSTEM_PROMPT,
-        model=config.CODE_AGENT_MODEL,
-    )
+        raw = provider.chat(
+            messages=[{"role": "user", "content": prompt}],
+            system=SYSTEM_PROMPT,
+            model=config.CODE_AGENT_MODEL,
+        )
 
-    # Clean up the output in case the LLM included markdown fences
-    text = raw.strip()
-    fence_match = re.search(r"```(?:python)?\s*([\s\S]+?)\s*```", text)
-    if fence_match:
-        return fence_match.group(1).strip()
-    return text
+        text = raw.strip()
+        fence_match = re.search(r"```(?:python)?\s*([\s\S]+?)\s*```", text)
+        if fence_match:
+            return fence_match.group(1).strip()
+        return text
+
+data_agent = DataAgent()

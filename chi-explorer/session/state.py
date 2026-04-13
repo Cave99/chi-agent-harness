@@ -1,7 +1,7 @@
 """
 session/state.py — In-memory session state manager.
 
-Stores per-session state keyed by Flask session ID.
+Stores per-session state keyed by session ID.
 No disk persistence for the home build.
 """
 from __future__ import annotations

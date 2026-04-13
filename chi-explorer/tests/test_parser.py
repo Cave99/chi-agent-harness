@@ -4,7 +4,7 @@ test_parser.py — Integration test for synthetic.py + parser.py.
 Generates 100 synthetic records from a hardcoded field manifest,
 runs the parser, and prints the full summary dict.
 
-No LLM or Flask dependency — fully standalone.
+No LLM or web framework dependency — fully standalone.
 
 Run:
   python test_parser.py
